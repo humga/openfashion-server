@@ -12,3 +12,4 @@ starwars = {path = "./starwars"}
 hyper = "1.0.1"
 async-graphql-warp = "6.0.11"
 warp = "0.3.6"
+
