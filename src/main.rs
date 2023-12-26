@@ -1,12 +1,10 @@
-use async_graphql::{http::GraphiQLSource, EmptyMutation, EmptySubscription, Schema};
-use async_graphql_poem::GraphQL;
-use poem::{get, handler, listener::TcpListener, web::Html, IntoResponse, Route, Server};
-use starwars::{QueryRoot, StarWars};
+use std::convert::Infallible;
 
-#[handler]
-async fn graphiql() -> impl IntoResponse {
-    Html(GraphiQLSource::build().endpoint("/").finish())
-}
+use async_graphql::{http::GraphiQLSource, EmptyMutation, EmptySubscription, Schema};
+use async_graphql_warp::{GraphQLBadRequest, GraphQLResponse};
+use starwars::{QueryRoot, StarWars};
+use warp::{http::Response as HttpResponse, Filter, Rejection,http::StatusCode};
+
 
 #[tokio::main]
 async fn main() {
@@ -14,11 +12,38 @@ async fn main() {
         .data(StarWars::new())
         .finish();
 
-    let app = Route::new().at("/", get(graphiql).post(GraphQL::new(schema)));
-
     println!("GraphiQL IDE: http://localhost:8000");
-    Server::new(TcpListener::bind("127.0.0.1:8000"))
-        .run(app)
-        .await
-        .unwrap();
+
+    let graphql_post = async_graphql_warp::graphql(schema).and_then(
+        |(schema, request): (
+            Schema<QueryRoot, EmptyMutation, EmptySubscription>,
+            async_graphql::Request,
+        )| async move {
+            Ok::<_, Infallible>(GraphQLResponse::from(schema.execute(request).await))
+        },
+    );
+
+    let graphiql = warp::path::end().and(warp::get()).map(|| {
+        HttpResponse::builder()
+            .header("content-type", "text/html")
+            .body(GraphiQLSource::build().endpoint("/").finish())
+    });
+
+    let routes = graphiql
+        .or(graphql_post)
+        .recover(|err: Rejection| async move {
+            if let Some(GraphQLBadRequest(err)) = err.find() {
+                return Ok::<_, Infallible>(warp::reply::with_status(
+                    err.to_string(),
+                    StatusCode::BAD_REQUEST,
+                ));
+            }
+
+            Ok(warp::reply::with_status(
+                "INTERNAL_SERVER_ERROR".to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        });
+
+    warp::serve(routes).run(([127, 0, 0, 1], 8000)).await;
 }
